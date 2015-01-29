@@ -52,7 +52,11 @@ type postIndex struct {
 // for a path, src2 is assumed to be newer and is given preference.
 func Merge(dst, src1, src2 string) {
 	ix1 := Open(src1)
+	defer ix1.Close()
+
 	ix2 := Open(src2)
+	defer ix2.Close()
+
 	paths1 := ix1.Paths()
 	paths2 := ix2.Paths()
 
@@ -132,7 +136,7 @@ func Merge(dst, src1, src2 string) {
 
 	// Merged list of names.
 	nameData := ix3.offset()
-	nameIndexFile := bufCreate("")
+	nameIndexFile := bufCreate(dst + "~name-index")
 	new = 0
 	mi1 = 0
 	mi2 = 0
@@ -171,7 +175,7 @@ func Merge(dst, src1, src2 string) {
 	var w postDataWriter
 	r1.init(ix1, map1)
 	r2.init(ix2, map2)
-	w.init(ix3)
+	w.init(ix3, dst)
 	for {
 		if r1.trigram < r2.trigram {
 			w.trigram(r1.trigram)
@@ -311,9 +315,9 @@ type postDataWriter struct {
 	t             uint32
 }
 
-func (w *postDataWriter) init(out *bufWriter) {
+func (w *postDataWriter) init(out *bufWriter, name string) {
 	w.out = out
-	w.postIndexFile = bufCreate("")
+	w.postIndexFile = bufCreate(name + "~post-index")
 	w.base = out.offset()
 }
 
