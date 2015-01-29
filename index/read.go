@@ -71,6 +71,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"syscall"
 )
 
 const (
@@ -108,6 +109,10 @@ func Open(file string) *Index {
 	ix.numName = int((ix.postIndex-ix.nameIndex)/4) - 1
 	ix.numPost = int((n - ix.postIndex) / postEntrySize)
 	return ix
+}
+
+func (ix *Index) Close() {
+	ix.data.munmap()
 }
 
 // slice returns the slice of index data starting at the given byte offset.
@@ -423,6 +428,13 @@ func mmap(file string) mmapData {
 		log.Fatal(err)
 	}
 	return mmapFile(f)
+}
+
+func (d mmapData) munmap() {
+	err := syscall.Munmap(d.d[:cap(d.d)])
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 // File returns the name of the index file to use.

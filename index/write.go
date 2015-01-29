@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"code.google.com/p/codesearch/sparse"
+	"square/up/vendor/codesearch/sparse"
 )
 
 // Index writing.  See read.go for details of on-disk format.
@@ -53,6 +53,9 @@ type IndexWriter struct {
 
 	inbuf []byte     // input buffer
 	main  *bufWriter // main index file
+
+	sortTmp []postEntry
+	sortN   []int
 }
 
 const npost = 64 << 20 / 8 // 64 MB worth of post entries
@@ -61,9 +64,9 @@ const npost = 64 << 20 / 8 // 64 MB worth of post entries
 func Create(file string) *IndexWriter {
 	return &IndexWriter{
 		trigram:   sparse.NewSet(1 << 24),
-		nameData:  bufCreate(""),
-		nameIndex: bufCreate(""),
-		postIndex: bufCreate(""),
+		nameData:  bufCreate(file + "name-data"),
+		nameIndex: bufCreate(file + "name-index"),
+		postIndex: bufCreate(file + "post-index"),
 		main:      bufCreate(file),
 		post:      make([]postEntry, 0, npost),
 		inbuf:     make([]byte, 16384),
@@ -255,14 +258,14 @@ func (ix *IndexWriter) addName(name string) uint32 {
 // flushPost writes ix.post to a new temporary file and
 // clears the slice.
 func (ix *IndexWriter) flushPost() {
-	w, err := ioutil.TempFile("", "csearch-index")
+	w, err := ioutil.TempFile(".", ix.main.name+"post-tmp")
 	if err != nil {
 		log.Fatal(err)
 	}
 	if ix.Verbose {
 		log.Printf("flush %d entries to %s", len(ix.post), w.Name())
 	}
-	sortPost(ix.post)
+	ix.sortPost(ix.post)
 
 	// Write the raw ix.post array to disk as is.
 	// This process is the one reading it back in, so byte order is not a concern.
@@ -283,12 +286,13 @@ func (ix *IndexWriter) flushPost() {
 // into posting lists, writing the resulting lists to out.
 func (ix *IndexWriter) mergePost(out *bufWriter) {
 	var h postHeap
+	defer h.close()
 
 	log.Printf("merge %d files + mem", len(ix.postFile))
 	for _, f := range ix.postFile {
 		h.addFile(f)
 	}
-	sortPost(ix.post)
+	ix.sortPost(ix.post)
 	h.addMem(ix.post)
 
 	npost := 0
@@ -336,10 +340,19 @@ const postBuf = 4096
 // A postHeap is a heap (priority queue) of postChunks.
 type postHeap struct {
 	ch []*postChunk
+	mm []mmapData
+}
+
+func (h *postHeap) close() {
+	for _, d := range h.mm {
+		d.munmap()
+	}
 }
 
 func (h *postHeap) addFile(f *os.File) {
-	data := mmapFile(f).d
+	mm := mmapFile(f)
+	h.mm = append(h.mm, mm)
+	data := mm.d
 	m := (*[npost]postEntry)(unsafe.Pointer(&data[0]))[:len(data)/8]
 	h.addMem(m)
 }
@@ -464,11 +477,7 @@ func bufCreate(name string) *bufWriter {
 		f   *os.File
 		err error
 	)
-	if name != "" {
-		f, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
-	} else {
-		f, err = ioutil.TempFile("", "csearch")
-	}
+	f, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -598,14 +607,16 @@ func validUTF8(c1, c2 uint32) bool {
 // 24 bits to sort.  Run two rounds of 12-bit radix sort.
 const sortK = 12
 
-var sortTmp []postEntry
-var sortN [1 << sortK]int
-
-func sortPost(post []postEntry) {
-	if len(post) > len(sortTmp) {
-		sortTmp = make([]postEntry, len(post))
+func (ix *IndexWriter) sortPost(post []postEntry) {
+	if ix.sortN == nil {
+		ix.sortN = make([]int, 1<<sortK)
 	}
-	tmp := sortTmp[:len(post)]
+	sortN := ix.sortN
+
+	if len(post) > len(ix.sortTmp) {
+		ix.sortTmp = make([]postEntry, len(post))
+	}
+	tmp := ix.sortTmp[:len(post)]
 
 	const k = sortK
 	for i := range sortN {
